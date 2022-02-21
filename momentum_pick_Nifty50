@@ -1,0 +1,233 @@
+library(quantmod)
+library(nse2r)
+library(ggplot2)
+Symbols <- nse_stock_top_losers(clean_names = TRUE)
+#Symbols <- c("M&M","HCLTECH","ASIANPAINT","BAJAJ-AUTO","DRREDDY","CIPLA",
+#             "BRITANNIA","EICHERMOT","SUNPHARMA","BAJFINANCE",
+#             "NESTLEIND","TATACONSUM","HDFCLIFE","DIVISLAB")
+tickers <- Symbols$symbol <- paste0(Symbols$symbol, ".NS")
+print(tickers)
+
+portfolioprices <- NULL
+
+#Defining date from when the data to be downloaded
+since <- "2017-01-01"
+
+for (ticker in tickers) {
+  portfolioprices <- cbind(portfolioprices,
+                           getSymbols.yahoo(ticker,
+                                            from = since,
+                                            periodicity = "daily",
+                                            auto.assign=FALSE)[,6])
+  
+}
+
+#Calculating daily return on stocks using function ROC
+portfolioret <- na.omit(ROC(portfolioprices))
+head(portfolioprices)
+#********************************************************
+#adding library portfolio analytics for portfolio optimization
+library(PortfolioAnalytics)
+portf <- portfolio.spec(assets = colnames(portfolioret))
+
+#Adding constraints to portfolio
+portf <- add.constraint(portfolio = portf,
+                        type = "weight_sum",
+                        min_sum=1, max_sum=1, indexnum = 3)
+portf <- add.constraint(portfolio = portf,
+                        type = "diversification",
+                        indexnum = 1)
+portf <- add.constraint(portfolio = portf,
+                        type = "full_investment", indexnum = 2)
+portf <- add.constraint(portfolio = portf,
+                        type = "long_only", indexnum = 4)
+
+#Adding objective to maximize mean
+portf <- add.objective(portfolio = portf,
+                       type = "return", name = "mean")
+
+#Adding objective to minimize standard deviation
+portf <- add.objective(portfolio = portf,
+                       type = "risk", name = "StdDev")
+
+#Portfolio optimization with ROI method
+maxSR.portf.roi <- optimize.portfolio(portfolioret,
+                                      portfolio = portf,
+                                      optimize_method = "ROI",
+                                      maxSR = TRUE,
+                                      search_size = 10000,
+                                      trace = TRUE)
+
+weight.roi <- extractWeights(maxSR.portf.roi)
+ret.roi <- Return.portfolio(portfolioret, weight.roi)
+##colnames(ret.roi) <- "ROI"
+print(sort(weight.roi*100, decreasing = TRUE))
+table.AnnualizedReturns(ret.roi)
+#******************************************************
+#Portfolio optimization with Random method
+maxSR.portf.rp <- optimize.portfolio(portfolioret,
+                                     portfolio = portf,
+                                     optimize_method = "random",
+                                     maxSR = TRUE,
+                                     search_size = 50000,
+                                     trace = FALSE)
+weight.rp <- extractWeights(maxSR.portf.rp)
+ret.rp <- Return.portfolio(portfolioret, weight.rp)
+colnames(ret.rp) <- "Random"
+#*********************************************************
+#Portfolio optimization with DEoptim method
+maxSR.portf.optim <- optimize.portfolio(portfolioret,
+                                        portfolio = portf,
+                                        optimize_method = "DEoptim",
+                                        maxSR = TRUE,
+                                        search_size = 50000,
+                                        trace = FALSE)
+
+weight.optim <- extractWeights(maxSR.portf.optim)
+ret.optim <- Return.portfolio(portfolioret, weight.optim)
+colnames(ret.optim) <- "DEoptim"
+#********************************************************
+#Compiling returns, StdDev & SharpeRatio from all optimization methods
+returns <- cbind(table.AnnualizedReturns(ret.optim),
+                 table.AnnualizedReturns(ret.roi),
+                 table.AnnualizedReturns(ret.rp))
+#Printing returns table
+print(returns)
+
+#Transposing the table
+returns.trans <- data.frame(t(returns))
+
+#Calling the optimizing method which gives maximum Sharpe Ratio
+method <- rownames(returns.trans[order(returns.trans$Annualized.Sharpe..Rf.0..,
+                                       decreasing = TRUE)[1],])
+#Considering this method for further study
+print(method)
+#**************************************************************
+#Calling Nifty50 data to calculate it's returns against optimized portfolio
+nifty50.prices <- getSymbols.yahoo("^NSEI",
+                                   from = "2017-01-01",
+                                   periodicity = "daily",
+                                   auto.assign=FALSE)[,6]
+nifty50.ret <- na.omit(ROC(nifty50.prices))
+
+benchmark <- nifty50.ret
+#*****************************************************************
+#Let's make a portfolio having equal weightage for all components of Nifty50
+equalweights <- rep(1/ncol(portfolioret), ncol(portfolioret))
+equalweights.portf <- Return.portfolio(portfolioret,
+                                       weights = equalweights)
+colnames(equalweights.portf) <- "Equal.Weight"
+#*****************************************************************
+#Tabulating optimized portfolio v/s Nifty50 returns, StdDev & Sharpe Ratio
+compare.ret <- cbind(table.AnnualizedReturns(benchmark),
+                     table.AnnualizedReturns(ret.roi),
+                     table.AnnualizedReturns(equalweights.portf))
+print(compare.ret)
+#****************************************************************
+ret.df <- na.omit(cbind(ret.roi, benchmark, equalweights.portf))
+str(ret.df)
+charts.PerformanceSummary(ret.df, plot.engine = "plotly",
+                          main = "Profit Loss Statement")
+#****************************************************************
+#Check covariance between nifty50 returns v/s optimized portfolio returns
+compare.cov <- cov(ret.df$ROI, ret.df$NSEI.Adjusted, use = "everything",
+                   method = "spearman")
+print(compare.cov)
+
+#Check correlation between Nifty50 returns v/s optimized portfolio returns
+compare.cor <- cor(ret.df$ROI, ret.df$NSEI.Adjusted, use = "everything",
+                   method = "spearman")
+print(compare.cor)
+
+#getting statistical summary of all three portfolio returns data
+print(summary(ret.df))
+
+ret.df.iqr <- cbind(IQR(ret.roi, na.rm = FALSE, type = 7),
+                    IQR(benchmark, na.rm = FALSE, type = 7),
+                    IQR(equalweights.portf, na.rm = FALSE, type = 7))
+print(ret.df.iqr)
+#Above table shows most of the observations for ROI portfolio return
+##lies in interquartile range
+#*****************************************************************
+#plotting box and whiskers chart to identify outliers
+chart.Boxplot(
+  ret.df,
+  names = TRUE,
+  as.Tufte = FALSE,
+  plot.engine = "plotly",
+  sort.by = "mean",
+  colorset = "black",
+  symbol.color = "red",
+  mean.symbol = 1,
+  median.symbol = "|",
+  outlier.symbol = 1,
+  show.data = NULL,
+  add.mean = TRUE,
+  sort.ascending = FALSE,
+  xlab = "Return",
+  main = "Return Distribution Comparison",
+  element.color = "darkgray"
+)
+#Chart shows ROI optimized portfolio has more reading in interquartile
+##range than Nifty50 and equal weight portfolio.
+###Also it has more outliers at positive side
+#*****************************************************************
+#Comparing skewness
+Compare.skewness <- skewness(ret.df, na.rm = FALSE, method = c("sample"))
+print(Compare.skewness)
+#The fact that optimized portfolio has least skewness, proves the
+##optimization method has successfully reduced the standard deviation
+###analyzing the historical data
+
+#Comparing Kurtosis
+Compare.kurt <- kurtosis(ret.df, na.rm = FALSE, method = c("sample"))
+print(Compare.kurt)
+#optimized portfolio has the least kurtosis, justifying least number of
+##outliers in box and whiskers plot
+#*****************************************************************
+#Getting Gold prices from FRED using quantmod in USD
+goldprices <- getSymbols.FRED("GOLDAMGBD228NLBM",
+                              periodicity="daily",
+                              auto.assign=FALSE)
+
+#Calculating daily returns from Gold
+goldret <- na.omit(ROC(goldprices))
+#*****************************************************************
+
+#Getting Crude oil prices from FRED using quantmod in USD
+crudeprices <- getSymbols.FRED("DCOILWTICO",
+                               periodicity="daily",
+                               auto.assign=FALSE)
+
+#Calculating daily change in crude oil prices
+crudechange <- na.omit(ROC(crudeprices))
+#*****************************************************************
+#Getting Indian rupees to USD exchange rates
+inr.rate <- getSymbols.FRED("DEXINUS",
+                            periodicity="daily",
+                            auto.assign=FALSE)
+
+#Calculating daily change in INR to USD conversion rate
+inr.rate.change <- na.omit(ROC(inr.rate))
+#*****************************************************************
+#Regression analysis between ROI optimized portfolio and Gold
+##Crude oil & USD
+ret.regression <- na.omit(cbind(ret.roi, goldret, crudechange,
+                                inr.rate.change))
+colnames(ret.regression) <- c("ROI", "GOLD_return", "CrudeOil_return",
+                              "INR_per_USD")
+
+#Linear Regression analysis, where
+#ROI_portf_return = bo+b1*gold_return+b2*crude_oil_return+b3*INR_return
+#For regression model; Ho: bo=b1=b2=b3
+#For independent variables; Ho: bi=0
+roi.linreg <- lm(ret.regression$ROI~ret.regression$GOLD_return
+                 +ret.regression$CrudeOil_return
+                 +ret.regression$INR_per_USD)
+print(summary(roi.linreg))
+#****************************************************************
+#Let's apply the knowledge in real market by making a basket of below stocks
+##with given weightages
+
+#****************************************************************
+#********************NAMASKAR******************************
